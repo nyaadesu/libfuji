@@ -87,8 +87,9 @@ int fuji_get_device_info(struct PtpRuntime *r) {
 	struct PtpCommand cmd;
 	cmd.code = PTP_OC_FUJI_GetDeviceInfo;
 	cmd.param_length = 0;
-	// TODO: Parsing should be done here
-	return ptp_send(r, &cmd);
+	int rc = ptp_send(r, &cmd);
+	fuji_register_device_info(r, &r->priv->prop_desc_list);
+	return rc;
 }
 
 static int fuji_tether_download(struct PtpRuntime *r) {
@@ -279,11 +280,6 @@ int fuji_config_device_info_routine(struct PtpRuntime *r) {
 	if (fuji->remote_version != -1 && fuji->camera_state != FUJI_PC_AUTO_SAVE && fuji->transport != FUJI_FEATURE_XAPP_WIRELESS_COMM) {
 		int rc = fuji_get_device_info(r);
 		if (rc) return rc;
-
-		fuji_register_device_info(r, ptp_get_payload(r));
-
-		// TODO: Parse device info
-		// Only useful for later on when we want to do property setting/getting
 	}
 
 	return 0;
@@ -930,3 +926,5 @@ int ptp_fuji_read_liveview_frame(struct PtpRuntime *r, unsigned int *size) {
 	}
 	return rc;
 }
+
+//int fuji_ptp_set_liveview_setting(struct PtpRuntime *r, )

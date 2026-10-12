@@ -8,47 +8,141 @@
 #include "fuji.h"
 #include "fujiptp.h"
 
-static int get_prop_size(uint16_t code) {
+const char *get_val_name(uint32_t code, uint32_t val) {
 	switch (code) {
-	case PTP_DPC_CaptureDelay:
-		return 2;
+			case PTP_DPC_CaptureDelay:
+				switch (val) {
+					case 0: return "off";
+					case 2: return "2s";
+					case 4: return "10s";
+					default: return NULL;
+				}
+			case PTP_DPC_FlashMode: return NULL;
+			case PTP_DPC_WhiteBalance: return NULL;
+			case PTP_DPC_ExposureBiasCompensation: return NULL;
+			case PTP_DPC_FUJI_FilmSimulation:
+				switch (val) {
+					case 1: return "Standard";
+					case 2: return "Vivid";
+					case 3: return "Soft";
+					case 4: return "4";
+					case 5: return "5";
+					case 6: return "6";
+					case 7: return "7";
+					case 8: return "8";
+					case 9: return "9";
+					case 10: return "10";
+					case 11: return "11";
+					default: return NULL;
+				}
+			case PTP_DPC_FUJI_ExposureIndex:
+				switch (val) {
+					// guess
+					case 0x80000190: return "AUTO(400)";
+					case 0x80000320: return "AUTO(800)";
+					case 0x80000640: return "AUTO(1600)";
+					case 0x80000c80: return "AUTO(3200)";
+					case 0x80001900: return "AUTO(6400)";
+					case 0x40000064: return "AUTO(100)";
+					case 0xc8: return  "200";
+					case 0xfa: return  "250";
+					case 0x140: return "320";
+					case 0x190: return "400";
+					case 0x1f4: return "500";
+					case 0x280: return "640";
+					case 0x320: return "800";
+					case 0x3e8: return "1000";
+					case 0x4e2: return "1250";
+					case 0x640: return "1600";
+					case 0x7d0: return "2000";
+					case 0x9c4: return "2500";
+					case 0xc80: return "3200";
+					case 0xfa0: return "4000";
+					case 0x1388: return "5000";
+					case 0x1900: return "6400";
+					// guess
+					case 0x40003200: return "12800 (?)";
+					case 0x40006400: return "25600 (?)";
+					case 0x4000c800: return "51200 (?)";
+					default: return NULL;
+				}
+			case PTP_DPC_FUJI_RecMode: return NULL;
+			case PTP_DPC_FUJI_FocusMeteringMode: return NULL;
+			case PTP_DPC_FNumber: switch (val) {
+				case 350: return  "f/3.5";
+				case 450: return  "f/4.5";
+				case 530: return  "f/5.3";
+				case 710: return  "f/7.1";
+				case 1000: return "f/10.0";
+				case 1100: return "f/11.0";
+				case 1600: return "f/16.0";
+				default: return NULL;
+			}
 	}
-	return 0;
+	return NULL;
 }
 
-int fuji_register_device_info(struct PtpRuntime *r, uint8_t *data) {
-	// 'Device info' holds all the different limits for different properties
-	// TODO: Seems like 'device info' should be renamed to something like PropLimits?
-	int of = 0;
+int fuji_register_device_info(struct PtpRuntime *r, struct FujiPropDescList *list) {
+	uint8_t *data = ptp_get_payload(r);
 
-	uint32_t length;
-	of += ptp_read_u32(data + of, &length);
+	unsigned int of = 0;
 
-	if (length > 500) {
-		ptp_panic("Too many properties");
-		return -1;
+	uint32_t n_entries;
+	of += ptp_read_u32(data + of, &n_entries);
+
+	if (list->items != NULL) {
+		for (unsigned int i = 0; i < list->length; i++) {
+			free(list->items[i]);
+		}
+		free(list->items);
 	}
 
-	for (uint32_t i = 0; i < length; i++) {
+	list->length = n_entries;
+	list->items = malloc(sizeof(struct FujiPropDesc *) * n_entries);
+
+	for (unsigned int i = 0; i < n_entries; i++) {
+		if (of > ptp_get_payload_length(r)) ptp_panic("overflow");
+		unsigned int start_of = of;
 		uint32_t this_length;
-		uint16_t code;
+		uint16_t code, type;
 		of += ptp_read_u32(data + of, &this_length);
 		of += ptp_read_u16(data + of, &code);
+		of += ptp_read_u16(data + of, &type);
+		of += 1; // ???
 
-		ptp_verbose_log(r, "Code, %X\n", code);
-		ptp_verbose_log(r, "length, %d\n", this_length);
+		uint32_t default_value;
+		uint16_t n_items;
 
-		//struct PtpPropDesc pd;
-		//int rc = ptp_get_prop_desc(r, code, &pd);
-		//if (rc) return rc;
-
-		//plat_dbg("data type: %X\n", pd.data_type);
-
-		unsigned int payload_len = this_length - 2 - 4;
-		for (int x = 0; x < payload_len; x++) {
-			uint8_t b;
-			of += ptp_read_u8(data + of, &b);
+		if (type == 3 || type == 4) {
+			of += ptp_read_u32(data + of, &default_value);
+			of += 1; // ???
+			of += ptp_read_u16(data + of, &n_items);
+		} else if (type == 6) {
+			of += ptp_read_u32(data + of, &default_value);
+			of += ptp_read_u32(data + of, &default_value);
+			of += 1; // ???
+			of += ptp_read_u16(data + of, &n_items);
+		} else {
+			of = start_of + this_length;
+			continue;
 		}
+
+		list->items[i] = malloc(sizeof(struct FujiPropDesc) + (sizeof(struct PropDescValue) * n_items));
+		list->items[i]->n_items = n_items;
+		list->items[i]->code = code;
+
+		for (int v = 0; v < n_items; v++) {
+			uint32_t val = 0;
+			uint16_t val16 = 0;
+			if (type == 6) of += ptp_read_u32(data + of, &val);
+			else if (type == 3 || type == 4) { of += ptp_read_u16(data + of, &val16); val = val16; }
+			list->items[i]->items[v] = (struct PropDescValue){
+				.val_name = get_val_name(code, val),
+				.raw_val = val,
+			};
+		}
+
+		of = start_of + this_length;
 	}
 
 	return 0;
@@ -84,7 +178,7 @@ int ptp_fuji_parse_object_info(struct PtpRuntime *r, struct PtpFujiObjectInfo *o
 	return 0;
 }
 
-int fuji_d228(void) {
+__attribute__((unused)) int fuji_d228(void) {
 	// Thing that PC AutoSave does
 	//	char buffer[64];
 	//	int s = 0;
