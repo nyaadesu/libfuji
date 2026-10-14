@@ -311,10 +311,8 @@ int fuji_bluetooth_connect_to_wifi(struct PakModule *mod, struct PakBt *ctx, str
 	struct PakWiFiApFilter filter = {0};
 	filter.has_ssid = 1;
 
-	// TODO: Determine whether to use xapp or cr ptp protocol by checking for xapp-only service uuid
+	// TODO: Determine xapp/cr mode from bluetooth setup?
 	const char *wifi_setup_option = OPTION_WIFI_FROM_BT_XAPP;
-	//struct PakGattService *xapp_service = pak_bt_get_gatt_service_uuid(ctx, dev, XAPP_SVC_UUID);
-	//if (xapp_service == NULL) wifi_setup_option = OPTION_WIFI; else pak_bt_unref_gatt_service(ctx, xapp_service);
 
 	pak_debug_log(mod, "wifi setup option: %s", wifi_setup_option);
 
@@ -369,7 +367,7 @@ int fuji_bluetooth_connect_to_wifi(struct PakModule *mod, struct PakBt *ctx, str
 		pak_bt_read_characteristic_cached_value(ctx, chr, buf, sizeof(buf));
 
 		if (buf[0] == 0) {
-			pak_debug_log(mod, "Camera is busy, not connecting");
+			pak_rt_add_user_instruction(mod, "Camera is busy, can't connect. Switch to liveview.");
 		} else {
 			// buf[0] should be 1 on success or 0xff on timeout
 			pak_rt_add_wifi_connection(mod, &filter, wifi_setup_option);
@@ -402,6 +400,17 @@ static int send_client_name(struct PakModule *mod, struct PakGattService *pair_s
 	return 0;
 }
 
+int fill_props(struct PakModule *mod, struct PakBt *ctx, struct PakBtDevice *dev) {
+	// Read Name
+	if (get_characteristic_as_string(ctx, dev, GENERIC_ACCESS_SERVICE, DEVICE_NAME, mod->priv->device_name_buf, sizeof(mod->priv->device_name_buf)) == 0)
+		pak_rt_set_session_property(mod, PAK_PROP_NAME, mod->priv->device_name_buf);
+	// Read firmware version
+	char buf[64] = {0};
+	if (get_characteristic_as_string(ctx, dev, "0000180a-0000-1000-8000-00805f9b34fb", "00002A26-0000-1000-8000-00805f9b34fb", buf, sizeof(buf)) == 0)
+		pak_rt_set_session_property(mod, PAK_PROP_FW_VER, buf);
+	return 0;
+}
+
 int fuji_connect_bluetooth(struct PakModule *mod, struct PakBt *ctx, struct PakBtDevice *dev, struct PakSavedConnection *saved) {
 	pak_bt_set_device_callback(ctx, dev, device_callback, mod);
 
@@ -411,7 +420,7 @@ int fuji_connect_bluetooth(struct PakModule *mod, struct PakBt *ctx, struct PakB
 	if (saved == NULL) {
 		unsigned int sz = pak_bt_get_manufacturer_data(ctx, dev, 0, (uint8_t *)&mfgdata, sizeof(mfgdata));
 		if (sz == 0) {
-			pak_debug_log(mod, "Device is not in pairing mode");
+			pak_rt_add_user_instruction(mod, "Device is not in pairing mode");
 			return PAK_ERR_NO_CONNECTION;
 		}
 		pak_debug_log(mod, "mfgdata sz: %u", sz);
@@ -428,7 +437,6 @@ int fuji_connect_bluetooth(struct PakModule *mod, struct PakBt *ctx, struct PakB
 		pak_debug_log(mod, "pak_bt_device_connect");
 		return rc;
 	}
-
 	// progress is now 30 (from callbacks)
 
 	struct PakGattService *pair_service = pak_bt_get_gatt_service_uuid(ctx, dev, SVC_PAIR_UUID);
@@ -476,6 +484,8 @@ int fuji_connect_bluetooth(struct PakModule *mod, struct PakBt *ctx, struct PakB
 		rc = send_client_name(mod, pair_service);
 		if (rc) return rc;
 
+		fill_props(mod, ctx, dev);
+
 		pak_rt_set_progress_bar(mod, mod->priv->current_job, 55);
 
 		int percent = 40;
@@ -512,8 +522,7 @@ int fuji_connect_bluetooth(struct PakModule *mod, struct PakBt *ctx, struct PakB
 
 		rc = pak_bt_write_characteristic(ctx, pair_chr, mfgdata.token.data, sizeof(mfgdata.token.data), 1);
 		if (rc) {
-			// TODO: Fails if 'SELECT PAIRING DESTINATION' setting on camera doesn't match this device
-			pak_debug_log(mod, "pak_bt_write_characteristic");
+			pak_debug_log(mod, "Camera rejected this device and needs to be repaired.");
 			return rc;
 		}
 
@@ -521,6 +530,8 @@ int fuji_connect_bluetooth(struct PakModule *mod, struct PakBt *ctx, struct PakB
 
 		rc = send_client_name(mod, pair_service);
 		if (rc) return rc;
+
+		fill_props(mod, ctx, dev);
 
 		pak_bt_unref_gatt_service(ctx, pair_service);
 
@@ -537,22 +548,8 @@ int fuji_connect_bluetooth(struct PakModule *mod, struct PakBt *ctx, struct PakB
 		subscribe(ctx, dev, SVC_CONF_UUID, CHR_IND3_UUID, 1);
 	}
 
-	// Something timing related seems to be breaking the following characteristic reads...
-	// sleep a bit for now as a workaround. on android readCharacteristic just returns false.
-	usleep(1000 * 100);
-
-	// Read device name through generic service
-	char name_buf[64] = {0};
-	get_characteristic_as_string(ctx, dev, GENERIC_ACCESS_SERVICE, DEVICE_NAME, name_buf, sizeof(name_buf));
-	pak_rt_set_session_property(mod, PAK_PROP_NAME, name_buf);
-
-	// Read firmware version
-	char buf[64] = {0};
-	get_characteristic_as_string(ctx, dev, "0000180a-0000-1000-8000-00805f9b34fb", "00002A26-0000-1000-8000-00805f9b34fb", buf, sizeof(buf));
-	pak_rt_set_session_property(mod, PAK_PROP_FW_VER, buf);
-
 	pak_rt_save_session_signature(mod, &(struct PakSavedConnection){
-		.name = name_buf,
+		.name = mod->priv->device_name_buf,
 		.unique_id = dev->mac_address,
 		.aux_data = (uint8_t *)mfgdata.token.data,
 		.aux_data_length = sizeof(mfgdata.token.data),

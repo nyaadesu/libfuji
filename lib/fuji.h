@@ -31,7 +31,21 @@ struct DiscoverInfo {
 	int product_id;
 };
 
+struct FujiPropDesc {
+	int code;
+	unsigned int n_items;
+	struct PropDescValue {
+		const char *val_name;
+		uint32_t raw_val;
+	}items[];
+};
+struct FujiPropDescList {
+	unsigned int length;
+	struct FujiPropDesc **items;
+};
+
 /// Fujifilm priv struct for PtpRuntime->priv variable
+/// zeroed out on init
 struct PtpUserPriv {
 	struct PakModule *mod;
 	char ip_address[64];
@@ -51,6 +65,14 @@ struct PtpUserPriv {
 	int image_get_version;
 	/// @brief Camera's initial value of PTP_DPC_FUJI_RemoteVersion_DF24
 	int remote_version;
+	/// @brief Current value of PTP_DPC_FUJI_ExposureIndex
+	int iso;
+	/// @brief Current value of PTP_DPC_FNumber
+	int fnumber;
+	/// @brief Current value of PTP_DPC_FUJI_ShutterSpeed2 (?)
+	int shutterspeed;
+	/// @brief Cached value of PTP_OC_FUJI_GetDeviceInfo
+	struct FujiPropDescList prop_desc_list;
 	// have liveview sockets been opened already
 	int opened_liveview_sockets;
 	int num_objects;
@@ -62,8 +84,8 @@ struct PtpUserPriv {
 	struct PtpObjectInfo current_downloading_oi;
 	int n_items_downloaded;
 
-	uint8_t *liveview_buffer;
-	unsigned int liveview_buffer_length;
+//	uint8_t *liveview_buffer;
+//	unsigned int liveview_buffer_length;
 };
 
 typedef struct PtpUserPriv fujipriv_t;
@@ -124,7 +146,8 @@ int fujiusb_try_connect(struct PtpRuntime *r, int num);
 int fujiusb_setup(struct PtpRuntime *r);
 int fujitether_setup(struct PtpRuntime *r, const char *client_name);
 
-int fuji_register_device_info(struct PtpRuntime *r, uint8_t *data);
+int fuji_get_device_info(struct PtpRuntime *r);
+int fuji_register_device_info(struct PtpRuntime *r, struct FujiPropDescList *list);
 
 // Fuji (PTP/IP)
 int ptp_fuji_parse_init_struct(struct PtpRuntime *r, struct PtpFujiInitResp *resp);

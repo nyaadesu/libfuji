@@ -8,6 +8,7 @@ struct ModulePriv {
 	struct PakModule *mod;
 	struct PakBtDevice *dev;
 	int current_job;
+	char device_name_buf[64];
 
 	int update_progress_bar_job;
 	unsigned int total_read;

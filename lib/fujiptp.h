@@ -179,6 +179,7 @@ enum FujiVendorOpcodes {
     PTP_OC_FUJI_LockS1Lock = 0x9026,
     PTP_OC_FUJI_UnlockS1Lock = 0x9027,
     PTP_OC_FUJI_GetDeviceInfo = 0x902B,
+	/// Takes 1 param (1 step up, 0 step down)
     PTP_OC_FUJI_StepShutterSpeed = 0x902C,
     PTP_OC_FUJI_StepFNumber = 0x902D,
     PTP_OC_FUJI_StepExposureBias = 0x902E,
@@ -225,7 +226,7 @@ enum FujiVendorOpcodes {
 #define PTP_DPC_FUJI_CommandDialMode			0xD028
 #define PTP_DPC_FUJI_Shadowing				0xD029
 /* d02a - d02c also appear in setafmode */
-#define PTP_DPC_FUJI_ExposureIndex			0xD02A
+#define PTP_DPC_FUJI_ExposureIndex			0xD02A /* lv ISO */
 #define PTP_DPC_FUJI_MovieISO				0xD02B
 #define PTP_DPC_FUJI_WideDynamicRange			0xD02E
 #define PTP_DPC_FUJI_TNumber				0xD02F

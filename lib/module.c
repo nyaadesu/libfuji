@@ -323,6 +323,44 @@ static int on_disconnect(struct PakModule *mod) {
 	return 0;
 }
 
+static int update_liveview_widgets(struct PakModule *mod) {
+	struct PtpRuntime *r = mod->priv->r;
+	struct FujiPropDescList *list = &r->priv->prop_desc_list;
+	const char *dummy_list[64];
+	for (unsigned int i = 0; i < list->length; i++) {
+		uint32_t raw_val;
+		const char *widget_name;
+		switch (list->items[i]->code) {
+			case PTP_DPC_FUJI_ExposureIndex: {
+				raw_val = r->priv->iso;
+				widget_name = "iso";
+			} break;
+			case PTP_DPC_FNumber: {
+				raw_val = r->priv->fnumber;
+				widget_name = "aperture";
+			} break;
+			default: continue;
+		}
+
+		struct FujiPropDesc *desc = list->items[i];
+		int z;
+		int selected_index = -1;
+		for (z = 0; z < desc->n_items; z++) {
+			if (desc->items[z].val_name == NULL) continue;
+			dummy_list[z] = desc->items[z].val_name;
+			if (desc->items[z].raw_val == raw_val) selected_index = z;
+		}
+		dummy_list[z] = NULL;
+
+		pak_rt_set_widget(mod, widget_name, &(struct PakWidget) {
+			.group = PAK_GROUP_LIVEVIEW,
+			.type = PAK_DROPDOWN,
+			.u.dropdownv = { .index_value = selected_index, .list = dummy_list }
+		});
+	}
+	return 0;
+}
+
 static int on_switch_screen(struct PakModule *mod, int old_screen, int new_screen, int job) {
 	struct PtpRuntime *r = mod->priv->r;
 	int rc;

@@ -87,8 +87,10 @@ int fuji_get_device_info(struct PtpRuntime *r) {
 	struct PtpCommand cmd;
 	cmd.code = PTP_OC_FUJI_GetDeviceInfo;
 	cmd.param_length = 0;
+	ptp_mutex_lock(r);
 	int rc = ptp_send(r, &cmd);
 	fuji_register_device_info(r, &r->priv->prop_desc_list);
+	ptp_mutex_unlock(r);
 	return rc;
 }
 
@@ -346,9 +348,12 @@ int fuji_setup(struct PtpRuntime *r, const char *client_name) {
 	struct PtpFujiInitResp resp;
 	int rc = ptpip_fuji_connect_handshake(r, client_name, &resp);
 	if (rc == PTP_RUNTIME_ERR) {
+		if (app_check_thread_cancel(r)) return PTP_CANCELED;
 		rc = ptpip_fuji_connect_handshake(r, client_name, &resp);
 	} else if (rc) {
+		if (app_check_thread_cancel(r)) return PTP_CANCELED;
 		usleep(1000); // One last chance...
+		if (app_check_thread_cancel(r)) return PTP_CANCELED;
 		rc = ptpip_fuji_connect_handshake(r, client_name, &resp);
 	}
 	if (rc) {
@@ -384,7 +389,7 @@ int fuji_setup(struct PtpRuntime *r, const char *client_name) {
 	}
 
 	if (fuji->transport == FUJI_FEATURE_WIRELESS_TETHER) {
-		// Wireless tether uses USB style communication
+		// Wireless tether uses more standard MTP style communication
 		return 0;
 	}
 
