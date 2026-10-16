@@ -354,8 +354,8 @@ static int update_liveview_widgets(struct PakModule *mod) {
 
 		pak_rt_set_widget(mod, widget_name, &(struct PakWidget) {
 			.group = PAK_GROUP_LIVEVIEW,
-			.type = PAK_DROPDOWN,
-			.u.dropdownv = { .index_value = selected_index, .list = dummy_list }
+			.type = PAK_COMBOBOX,
+			.u.comboboxv = { .index_value = selected_index, .list = dummy_list }
 		});
 	}
 	return 0;
@@ -518,9 +518,28 @@ static int on_prop_changed(struct PakModule *mod, int job, const char *name, str
 	return 0;
 }
 
+int ptp_device_connect_from_libusb_handle(struct PtpRuntime *r, libusb_device *dev);
+
 static int on_try_connect_usb(struct PakModule *mod, libusb_device *dev, struct PakSavedConnection *saved, int job) {
-	pak_debug_log(mod, "USB not supported yet");
-	return -1;
+	mod->priv->current_job = job;
+	struct PtpRuntime *r = fuji_ptp_new(PTP_USB);
+	r->report_read_progress = ptp_report_read_progress;
+	r->priv->mod = mod;
+	mod->priv->r = r;
+
+	int rc = ptp_device_connect_from_libusb_handle(r, dev);
+	if (rc) {
+		pak_verbose_log(mod, "ptp_device_connect_from_libusb_handle");
+		return rc;
+	}
+
+	rc = fujiusb_setup(r);
+	if (rc) {
+		pak_verbose_log(mod, "fujiusb_setup");
+		return rc;
+	}
+
+	return 0;
 }
 
 static int on_request_liveview_frame(struct PakModule *mod, int job, struct PakFileHandle *handle) {
@@ -550,6 +569,6 @@ int get_module(struct PakModule *mod) {
 	mod->on_disconnect = on_disconnect;
 	mod->on_switch_screen = on_switch_screen;
 	mod->on_custom_command = on_command;
-	mod->on_setting_changed = on_prop_changed;
+	mod->on_widget_updated = on_prop_changed;
 	return 0;
 }
