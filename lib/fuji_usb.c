@@ -380,6 +380,7 @@ int fuji_process_raf(struct PtpRuntime *r, const char *input_raf_path, const cha
 
 	free(profile);
 
+	// Set to 1 to get full resolution JPEGs
 	rc = ptp_set_prop_value16(r, PTP_DPC_FUJI_StartRawConversion, 0);
 	if (rc) return rc;
 

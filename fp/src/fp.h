@@ -71,6 +71,9 @@ enum FujiSim {
 	FP_AcrosG = 15,
 	FP_Eterna = 16,
 	FP_ClassicNegative = 17,
+	FP_EternaBleachBypass = 18, // guess
+	FP_NostalgiaNeg = 19, // guess
+	FP_RealaACE = 20, // guess
 };
 
 enum FujiRange {
