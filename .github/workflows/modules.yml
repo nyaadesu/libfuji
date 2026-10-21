@@ -1,0 +1,48 @@
+name: Nightly Module
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: recursive
+    - name: Install deps
+      run: sudo apt update && sudo apt install -y --no-install-recommends gcc g++ git cmake curl ninja-build
+    - name: Checkout submodules
+      run: git submodule update --init --recursive
+    - name: Config to use https in case ssh isn't setup
+      run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+    - name: Install libpak
+      run: |
+        git clone https://github.com/petabyt/libpak.git --depth 1 --recurse-submodules /tmp/libpak
+    - name: Compile module
+      run: |
+        cmake -DCMAKE_TOOLCHAIN_FILE=/tmp/libpak/toolchain/toolchain.cmake \
+          -DMAKE_EXECUTABLE=ON \
+          -DCMAKE_PROJECT_INCLUDE=/tmp/libpak/toolchain/pakrt.cmake \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DPTP_NO_USB=ON \
+          -DLIBFUJI_MODULE=ON \
+          -G Ninja -B build
+        cmake --build build
+        mv build/fuji build/libfuji.wasm
+    - name: Upload Latest Pre-release
+      if: github.event_name != 'pull_request'
+      uses: ncipollo/release-action@v1
+      with:
+        artifacts: "build/libfuji.wasm"
+        tag: "latest"
+        name: "Nightly Wasm Build"
+        bodyFile: ".github/workflows/nightly.txt"
+        prerelease: false
+        allowUpdates: true
+        replacesArtifacts: true
+        commit: ${{ github.sha }}
+        token: ${{ secrets.GITHUB_TOKEN }}
