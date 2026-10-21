@@ -14,12 +14,22 @@ jobs:
       with:
         submodules: recursive
     - name: Install deps
-      run: sudo apt update && sudo apt install -y --no-install-recommends gcc g++ git cmake curl ninja-build wasi-libc
+      run: sudo apt update && sudo apt install -y --no-install-recommends gcc g++ git cmake curl ninja-build
     - name: Checkout submodules
       run: git submodule update --init --recursive
     - name: Config to use https in case ssh isn't setup
       run: git config --global url."https://github.com/".insteadOf "git@github.com:"
-    - name: Install libpak
+    - name: Install wasi sdk
+      run: |
+        WASI_OS=linux
+        WASI_ARCH=x86_64
+        WASI_VERSION=34
+        WASI_VERSION_FULL=${WASI_VERSION}.0
+        wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_VERSION}/wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-${WASI_OS}.tar.gz
+        tar xvf wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-${WASI_OS}.tar.gz
+        sudo mkdir -p /opt/wasi-sdk
+        sudo mv wasi-sdk-${WASI_VERSION_FULL}-${WASI_ARCH}-${WASI_OS}/* /opt/wasi-sdk/
+    - name: Clone libpak
       run: |
         git clone https://github.com/petabyt/libpak.git --depth 1 --recurse-submodules /tmp/libpak
     - name: Compile module
