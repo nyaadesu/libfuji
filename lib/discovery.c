@@ -301,13 +301,13 @@ static int respond_to_datagram(struct DiscoveryState *s, char *greeting, struct 
 			if (cur == NULL) return -1;
 			if (strcmp(cur, "*") != 0) {
 				ptp_verbose_log(s->r, "Client name: %s\n", cur);
-				strncpy(info->client_name, cur, sizeof(info->client_name));
+				snprintf(info->client_name, sizeof(info->client_name), "%s", cur);
 			}
 		} else if (!strcmp(cur, "DSCADDR")) {
 			cur = strtok_r(NULL, delim, &saveptr);
 			if (cur == NULL) return -1;
 			ptp_verbose_log(s->r, "Client IP: %s\n", cur);
-			strncpy(info->camera_ip, cur, sizeof(info->camera_ip));
+			snprintf(info->camera_ip, sizeof(info->camera_ip), "%s", cur);
 		}
 		cur = strtok_r(NULL, delim, &saveptr);
 	}
