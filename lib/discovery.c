@@ -76,18 +76,21 @@ static int get_local_ip(struct PtpRuntime *r, char buffer[64]) {
 	serv.sin_addr.s_addr = inet_addr("1.1.1.1");
 	serv.sin_port = htons(1234);
 	int sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock < 0) return -1;
 	ptp_set_extra_socket_settings(r, sock);
 	int rc = connect(sock, (const struct sockaddr*) &serv, sizeof(serv));
-	if (rc < 0) return rc;
+	if (rc < 0) {
+		close(sock);
+		return rc;
+	}
 
 	struct sockaddr_in name;
 	socklen_t namelen = sizeof(name);
 	rc = getsockname(sock, (struct sockaddr*) &name, &namelen);
+	close(sock);
 	if (rc < 0) return rc;
 
 	inet_ntop(AF_INET, &name.sin_addr, buffer, 64);
-
-	close(sock);
 	return 0;
 }
 
@@ -110,12 +113,14 @@ static int connect_to_notify_server(struct DiscoveryState *s, char *ip, int port
 	sa.sin_port = htons(port);
 	if (inet_pton(AF_INET, ip, &(sa.sin_addr)) <= 0) {
 		ptp_verbose_log(s->r, "inet_pton\n");
+		close(server_fd);
 		return -1;
 	}
 
 	if (connect(server_fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
 		if (errno != EINPROGRESS) {
 			ptp_error_log(s->r, "Connect fail\n");
+			close(server_fd);
 			return -1;
 		}
 	}
@@ -132,6 +137,7 @@ static int connect_to_notify_server(struct DiscoveryState *s, char *ip, int port
 		socklen_t len = sizeof(so_error);
 		if (getsockopt(server_fd, SOL_SOCKET, SO_ERROR, (void *)&so_error, &len) < 0) {
 			ptp_error_log(s->r, "Sockopt fail\n");
+			close(server_fd);
 			return -1;
 		}
 
@@ -145,13 +151,45 @@ static int connect_to_notify_server(struct DiscoveryState *s, char *ip, int port
 
 	close(server_fd);
 
+	// 0 is a valid fd; report failure as -1
+	return -1;
+}
+
+// Split one "KEY: value" header line in place. Spaces around the key and
+// spaces and quotes around the value are dropped, so DSCMODEL:"X-T30 II"
+// yields "X-T30 II". Returns -1 if the line has no colon.
+static int parse_header_line(char *line, char **key, char **value) {
+	char *v = strchr(line, ':');
+	if (v == NULL) return -1;
+	*v++ = '\0';
+	while (*line == ' ') line++;
+	size_t len = strlen(line);
+	while (len > 0 && line[len - 1] == ' ') line[--len] = '\0';
+	while (*v == ' ' || *v == '"') v++;
+	len = strlen(v);
+	while (len > 0 && (v[len - 1] == ' ' || v[len - 1] == '"')) v[--len] = '\0';
+	*key = line;
+	*value = v;
 	return 0;
 }
 
 static int start_invite_server(struct DiscoveryState *s, struct DiscoverInfo *info, int port) {
-	int server_fd, client_fd;
+	int server_fd, client_fd = -1;
+	int ret = -1;
 	struct sockaddr_in server_addr, client_addr;
 	socklen_t client_addr_len = sizeof(client_addr);
+
+	const char *resp;
+	if (port == FUJI_AUTOSAVE_REGISTER) {
+		resp =
+			"HTTP/1.1 200 OK\r\n"
+			"FOLDER: guest\r\n"
+			"ServiceName: PCAUTOSAVE/1.0\r\n";
+	} else if (port == FUJI_AUTOSAVE_CONNECT) {
+		resp = "HTTP/1.1 200 OK\r\n";
+	} else {
+		return -1;
+	}
 
 	server_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (server_fd < 0) {
@@ -161,6 +199,7 @@ static int start_invite_server(struct DiscoveryState *s, struct DiscoverInfo *in
 
 	ptp_set_extra_socket_settings(s->r, server_fd);
 
+	memset(&server_addr, 0, sizeof(server_addr));
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(port);
 	server_addr.sin_addr.s_addr = INADDR_ANY;
@@ -168,19 +207,19 @@ static int start_invite_server(struct DiscoveryState *s, struct DiscoverInfo *in
 	int yes = 1;
 	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (const void *)&yes, sizeof(int)) < 0) {
 		ptp_error_log(s->r, "Failed to set sockopt");
-		return -1;
+		goto end;
 	}
 
 	if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
 		ptp_error_log(s->r, "upnp: Binding failed\n");
-		return -1;
+		goto end;
 	}
 
 	// Listen for incoming connections
 	ptp_verbose_log(s->r, "invite server is listening...\n");
 	if (listen(server_fd, 5) < 0) {
 		ptp_error_log(s->r, "upnp: Listening failed\n");
-		return -1;
+		goto end;
 	}
 
 	struct timeval timeout;
@@ -194,98 +233,74 @@ static int start_invite_server(struct DiscoveryState *s, struct DiscoverInfo *in
 	ssize_t rc = select(server_fd + 1, &read_fds, NULL, NULL, &timeout);
 	if (rc < 0) {
 		ptp_error_log(s->r, "select() failed\n");
-		close(server_fd);
-		return -1;
+		goto end;
 	} else if (rc == 0) {
 		ptp_error_log(s->r, "select() timeout\n");
-		close(server_fd);
-		return -1;
+		goto end;
 	}
 
 	client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
 	if (client_fd < 0) {
 		ptp_error_log(s->r, "invite server: accepting connection failed: %d", errno);
-		return -1;
+		goto end;
 	}
 
 	ptp_verbose_log(s->r, "invite server: connection accepted from %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
 	fuji_discovery_update_progress(s->r, FUJI_UM_CAMERA_CONNECTED_TO_INVITE_SERVER);
 
-	// We don't really care about this info
 	char buffer[1024];
 	rc = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
 	if (rc < 0) {
-		perror("recv fail\n");
-		return -1;
+		ptp_error_log(s->r, "invite server: recv failed: %d\n", errno);
+		goto end;
 	}
 	buffer[rc] = '\0';
 
 	// Header values may contain spaces and quotes (DSCMODEL:"X-T30 II"), so
-	// split into lines and take everything after the first colon
-	char *saveptr;
+	// parse line by line rather than splitting on spaces
+	char *saveptr, *key, *value;
 	for (char *line = strtok_r(buffer, "\r\n", &saveptr); line != NULL; line = strtok_r(NULL, "\r\n", &saveptr)) {
-		char *value = strchr(line, ':');
-		if (value == NULL) continue;
-		*value++ = '\0';
-		// Tolerate spaces around the key, as the old space-splitting parser did
-		while (*line == ' ') line++;
-		size_t key_len = strlen(line);
-		while (key_len > 0 && line[key_len - 1] == ' ') line[--key_len] = '\0';
-		while (*value == ' ' || *value == '"') value++;
-		size_t len = strlen(value);
-		while (len > 0 && (value[len - 1] == ' ' || value[len - 1] == '"')) value[--len] = '\0';
-		if (!strcmp(line, "DSCNAME")) {
+		if (parse_header_line(line, &key, &value)) continue;
+		if (!strcmp(key, "DSCNAME")) {
 			snprintf(info->camera_name, sizeof(info->camera_name), "%s", value);
-		} else if (!strcmp(line, "DSCMODEL")) {
+		} else if (!strcmp(key, "DSCMODEL")) {
 			snprintf(info->camera_model, sizeof(info->camera_model), "%s", value);
 		}
-	}
-
-	char *resp;
-	if (port == FUJI_AUTOSAVE_REGISTER) {
-		resp = 
-			"HTTP/1.1 200 OK\r\n"
-			"FOLDER: guest\r\n"
-			"ServiceName: PCAUTOSAVE/1.0\r\n";
-	} else if (port == FUJI_AUTOSAVE_CONNECT) {
-		resp = "HTTP/1.1 200 OK\r\n";
-	} else {
-		return -1;
 	}
 
 	rc = send(client_fd, resp, strlen(resp), 0);
 	if (rc < 0) {
 		ptp_error_log(s->r, "Failed to send response\n");
-		return -1;
+		goto end;
 	}
 
-	close(client_fd);
+	ret = 0;
+	end:;
+	if (client_fd >= 0) close(client_fd);
 	close(server_fd);
-
-	return 0;
+	return ret;
 }
 
 static int respond_to_datagram(struct DiscoveryState *s, char *greeting, struct DiscoverInfo *info) {
 	int rc = 0;
-	char *saveptr;
-	char *delim = " :\r\n";
-	char *cur = strtok_r(greeting, delim, &saveptr);
-	while (cur != NULL) {
-		if (!strcmp(cur, "DISCOVER")) {
-			cur = strtok_r(NULL, delim, &saveptr);
-			if (cur == NULL) return -1;
-			if (strcmp(cur, "*") != 0) {
-				ptp_verbose_log(s->r, "Client name: %s\n", cur);
-				strncpy(info->client_name, cur, sizeof(info->client_name));
+	// "DISCOVER <client name> HTTP/1.1" followed by "KEY:value" header lines.
+	// The client name is "*" while registering, else the registered name.
+	char *saveptr, *key, *value;
+	for (char *line = strtok_r(greeting, "\r\n", &saveptr); line != NULL; line = strtok_r(NULL, "\r\n", &saveptr)) {
+		if (!strncmp(line, "DISCOVER ", 9)) {
+			char *name = line + 9;
+			char *proto = strstr(name, " HTTP/");
+			if (proto != NULL) *proto = '\0';
+			while (*name == ' ') name++;
+			if (name[0] != '\0' && strcmp(name, "*") != 0) {
+				ptp_verbose_log(s->r, "Client name: %s\n", name);
+				snprintf(info->client_name, sizeof(info->client_name), "%s", name);
 			}
-		} else if (!strcmp(cur, "DSCADDR")) {
-			cur = strtok_r(NULL, delim, &saveptr);
-			if (cur == NULL) return -1;
-			ptp_verbose_log(s->r, "Client IP: %s\n", cur);
-			strncpy(info->camera_ip, cur, sizeof(info->camera_ip));
+		} else if (parse_header_line(line, &key, &value) == 0 && !strcmp(key, "DSCADDR")) {
+			ptp_verbose_log(s->r, "Client IP: %s\n", value);
+			snprintf(info->camera_ip, sizeof(info->camera_ip), "%s", value);
 		}
-		cur = strtok_r(NULL, delim, &saveptr);
 	}
 
 	fuji_discovery_update_progress(s->r, FUJI_UM_CONNECTING_TO_NOTIFY_SERVER);
@@ -309,14 +324,14 @@ static int respond_to_datagram(struct DiscoveryState *s, char *greeting, struct 
 
 	ptp_verbose_log(s->r, "%s\n", notify);
 
-	size_t len = send(fd, notify, strlen(notify), 0);
-	if (len != strlen(notify)) {
+	ssize_t len = send(fd, notify, strlen(notify), 0);
+	if (len < 0 || (size_t)len != strlen(notify)) {
 		ptp_error_log(s->r, "Failed to send datagram response\n");
 		rc = -1; goto cleanup;
 	}
 
 	char ack[512];
-	len = recv(fd, ack, sizeof(ack), 0);
+	len = recv(fd, ack, sizeof(ack) - 1, 0);
 	if (len <= 0) {
 		ptp_error_log(s->r, "Failed to read datagram response\n");
 		rc = -1; goto cleanup;
@@ -404,6 +419,7 @@ int fuji_open_tether_server(struct DiscoveryState *s, const char *local_ip) {
 
 	ptp_set_extra_socket_settings(s->r, server_fd);
 
+	memset(&server_addr, 0, sizeof(server_addr));
 	server_addr.sin_family = AF_INET;
 	server_addr.sin_port = htons(FUJI_TETHER);
 	server_addr.sin_addr.s_addr = inet_addr(local_ip);
@@ -411,6 +427,7 @@ int fuji_open_tether_server(struct DiscoveryState *s, const char *local_ip) {
 	int yes = 1;
 	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (const void *)&yes, sizeof(int)) < 0) {
 		ptp_error_log(s->r, "Failed to set sockopt %d\n", errno);
+		close(server_fd);
 		return -1;
 	}
 //	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(int)) < 0) {
@@ -420,12 +437,14 @@ int fuji_open_tether_server(struct DiscoveryState *s, const char *local_ip) {
 
 	if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
 		ptp_error_log(s->r, "upnp: Binding failed %d\n", errno);
+		close(server_fd);
 		return -1;
 	}
 
 	// TODO: delete and add select()
 	if (listen(server_fd, 5) < 0) {
 		ptp_error_log(s->r, "upnp: Listening failed\n");
+		close(server_fd);
 		return -1;
 	}
 
@@ -445,55 +464,46 @@ static int fuji_tether_accept(struct DiscoverInfo *info, struct DiscoveryState *
 
 	ptp_verbose_log(s->r, "invite server: Connection accepted from %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
-	// We don't really care about this info
 	char buffer[1024];
 	int rc = (int)recv(client_fd, buffer, sizeof(buffer) - 1, 0);
 	if (rc < 0) {
-		perror("recv fail\n");
+		ptp_error_log(s->r, "invite server: recv failed: %d\n", errno);
+		close(client_fd);
 		return -1;
 	}
 	buffer[rc] = '\0';
 
-	char *saveptr;
-	char *delim = " :\r\n";
-	char *cur = strtok_r(buffer, delim, &saveptr);
-	while (cur != NULL) {
-		if (!strcmp(cur, "DSC")) {
-			cur = strtok_r(NULL, delim, &saveptr);
-			if (cur == NULL) return -1;
-			snprintf(info->camera_ip, sizeof(info->camera_ip), "%s", cur);
-		} else if (!strcmp(cur, "CAMERANAME")) {
-			cur = strtok_r(NULL, delim, &saveptr);
-			if (cur == NULL) return -1;
-			snprintf(info->camera_model, sizeof(info->camera_model), "%s", cur);
-		} else if (!strcmp(cur, "DSCPORT")) {
-			cur = strtok_r(NULL, delim, &saveptr);
-			if (cur == NULL) return -1;
-			char port_buf[16];
-			snprintf(port_buf, sizeof(port_buf), "%s", cur);
-			info->camera_port = (int)strtol(port_buf, NULL, 10);
+	char *saveptr, *key, *value;
+	for (char *line = strtok_r(buffer, "\r\n", &saveptr); line != NULL; line = strtok_r(NULL, "\r\n", &saveptr)) {
+		if (parse_header_line(line, &key, &value)) continue;
+		if (!strcmp(key, "DSC")) {
+			snprintf(info->camera_ip, sizeof(info->camera_ip), "%s", value);
+		} else if (!strcmp(key, "CAMERANAME")) {
+			snprintf(info->camera_model, sizeof(info->camera_model), "%s", value);
+		} else if (!strcmp(key, "DSCPORT")) {
+			info->camera_port = (int)strtol(value, NULL, 10);
 		}
-		cur = strtok_r(NULL, delim, &saveptr);
 	}
 
 	const char resp[] = "HTTP/1.1 200 OK\r\n";
 	rc = (int)send(client_fd, resp, sizeof(resp), 0);
+	close(client_fd);
 	if (rc < 0) {
 		ptp_error_log(s->r, "Failed to send response\n");
 		return -1;
 	}
-
-	close(client_fd);
 
 	return 0;
 }
 
 static int open_pcss(struct DiscoveryState *s) {
 	int sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock < 0) return -1;
 	ptp_set_extra_socket_settings(s->r, sock);
 
 	int b = 1;
 	if (setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (const void *)&b, sizeof(b)) < 0) {
+		close(sock);
 		return -1;
 	}
 
@@ -616,9 +626,9 @@ static int state_idle(struct DiscoveryState *s, struct DiscoverInfo *info, const
 		if (FD_ISSET(s->reg_fd, &fdset)) {
 			ptp_verbose_log(s->r, "AutoSave register\n");
 			info->transport = FUJI_FEATURE_AUTOSAVE;
-			unsigned int len = recvfrom(s->reg_fd, greeting, sizeof(greeting) - 1, 0, NULL, NULL);
+			ssize_t len = recvfrom(s->reg_fd, greeting, sizeof(greeting) - 1, 0, NULL, NULL);
 			if (len <= 0) {
-				ptp_error_log(s->r, "recvfrom: %d\n", len);
+				ptp_error_log(s->r, "recvfrom: %d\n", (int)len);
 				return -1;
 			}
 			greeting[len] = '\0';
@@ -632,9 +642,9 @@ static int state_idle(struct DiscoveryState *s, struct DiscoverInfo *info, const
 		if (FD_ISSET(s->con_fd, &fdset)) {
 			ptp_verbose_log(s->r, "AutoSave connect\n");
 			info->transport = FUJI_FEATURE_AUTOSAVE;
-			unsigned int len = recvfrom(s->con_fd, greeting, sizeof(greeting) - 1, 0, NULL, NULL);
+			ssize_t len = recvfrom(s->con_fd, greeting, sizeof(greeting) - 1, 0, NULL, NULL);
 			if (len <= 0) {
-				ptp_error_log(s->r, "recvfrom: %d\n", len);
+				ptp_error_log(s->r, "recvfrom: %d\n", (int)len);
 				return -1;
 			}
 			greeting[len] = '\0';
